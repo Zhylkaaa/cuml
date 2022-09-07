@@ -183,6 +183,7 @@ class AutoARIMA(Base):
     def __init__(self,
                  endog,
                  *,
+                 exog=None,
                  handle=None,
                  simple_differencing=True,
                  verbose=False,
@@ -196,6 +197,17 @@ class AutoARIMA(Base):
         # Get device array. Float64 only for now.
         self.d_y, self.n_obs, self.batch_size, self.dtype \
             = input_to_cuml_array(endog, check_dtype=np.float64)
+        
+        # Exogenous variables
+        if exog is not None:
+            self.d_exog, n_obs_exog, n_cols_exog, _ \
+                = input_to_cuml_array(exog, check_dtype=np.float64)
+
+            if n_obs_exog != self.n_obs:
+                raise ValueError("Number of observations mismatch between"
+                                 " endog and exog")
+        else:
+            self.d_exog = None
 
         self.simple_differencing = simple_differencing
 
@@ -376,6 +388,10 @@ class AutoARIMA(Base):
         id_tracker = []
         for (d_, D_) in data_dD:
             data_temp, id_temp = data_dD[(d_, D_)]
+            if self.d_exog is not None:
+                data_temp_exog = self.d_exog[id_temp].to_output("cupy")
+            else:
+                data_temp_exog = None
             batch_size = data_temp.shape[1] if len(data_temp.shape) > 1 else 1
 
             k_options = ([1 if d_ + D_ <= 1 else 0] if fit_intercept == "auto"
@@ -391,6 +407,7 @@ class AutoARIMA(Base):
                     continue
                 s_ = s if (P_ + D_ + Q_) else 0
                 model = ARIMA(endog=data_temp.to_output("cupy"),
+                              exog=data_temp_exog,
                               order=(p_, d_, q_),
                               seasonal_order=(P_, D_, Q_, s_),
                               fit_intercept=k_,
@@ -416,8 +433,14 @@ class AutoARIMA(Base):
                 if sub_batches[i] is None:
                     continue
                 p_, q_, P_, Q_, s_, k_ = all_orders[i]
+                id_temp = sub_id[i]
+                if self.d_exog is not None:
+                    data_temp_exog = self.d_exog[id_temp].to_output("cupy")
+                else:
+                    data_temp_exog = None
                 self.models.append(
-                    ARIMA(sub_batches[i].to_output("cupy"), order=(p_, d_, q_),
+                    ARIMA(sub_batches[i].to_output("cupy"), 
+                          exog=data_temp_exog, order=(p_, d_, q_),
                           seasonal_order=(P_, D_, Q_, s_), fit_intercept=k_,
                           handle=self.handle, output_type="cupy",
                           simple_differencing=self.simple_differencing))
